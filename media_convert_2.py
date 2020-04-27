@@ -42,19 +42,22 @@ import sys
 global EXT
 EXT = 'mp4'
 
+work_dir = '/home/plex/'
+
 # temporary enconding file
-temp_file = '/home/plex/temp.' + EXT
+temp_file = work_dir + 'temp.' + EXT
 
 # A list of directories to scan
-watched_folders = ['/home/plex/Concerts/', '/home/plex/Series']
+watched_folders = ['/home/plex/Movies', '/home/plex/Series']
 exclude = []
 
 # Conditions for video recoding
-MAX_BITRATE = 7000000
+MAX_BITRATE = 10000000
 MAX_HEIGHT = 1080
+MAX_WIDTH = 1920
 VIDEO_CODEC = "AVC"
 # Recode all videos ending with these extensions
-valid_extensions = ['rmvb', 'mkv', 'avi']
+valid_extensions = ['rmvb', 'mkv', 'avi', 'mov', 'wmv']
 
 # Conditions for audio recoding
 MAX_CHANNELS = 2
@@ -62,7 +65,7 @@ AUDIO_CODEC = "AAC"
 
 # FFMPEG parameters
 ffmpeg_base_cmd = "ffmpeg -loglevel error -hide_banner -hwaccel auto -i "
-ffmpeg_video_encode = " -c:v libx264 -preset faster -crf 23 -vf \"scale=-1:\'min(1080,ih)\'\" "
+ffmpeg_video_encode = " -c:v libx264 -preset faster -crf 22 -maxrate " + str(MAX_BITRATE) + " -vf \"scale=\'min(" + str(MAX_WIDTH) + ",iw)\':\'min(" + str(MAX_HEIGHT) + ",ih)\':force_original_aspect_ratio=decrease,pad=" + str(MAX_WIDTH) + ":" + str(MAX_HEIGHT) + ":(ow-iw)/2:(oh-ih)/2\" "
 ffmpeg_audio_encode = " -c:a aac -ac 2 -b:a 192k "
 
 # Flag to denote whether to delete source files after successfull encode
@@ -101,15 +104,28 @@ def needs_convert(file):
         if file.endswith(extension):
             return True
     if file.endswith(EXT):
+        stinfo = os.stat(file)
+        if stinfo.st_mtime > stinfo.st_atime:
+            logger.info('File mtime in the future, ignoring')
+            return False
         media_info = MediaInfo.parse(file)
+        logger.info('Parsing ' + file)
         if MediaInfo.can_parse():
             for track in media_info.tracks:
                 if track.track_type == 'Video':
-                    if not track.format.startswith(VIDEO_CODEC) or track.bit_rate > MAX_BITRATE or track.height > MAX_HEIGHT:
+                    logger.info('Codec: ' + track.format + ' - Bitrate: ' + str(track.bit_rate) + ' / Aspect: ' + str(track.width) + "x" + str(track.height))
+                    if not track.bit_rate:
+                        logger.info('Recoding for unkown bitrate')
+                        return True
+                    elif not track.format.startswith(VIDEO_CODEC) or track.bit_rate > MAX_BITRATE or track.width > MAX_WIDTH or track.height > MAX_HEIGHT:
+                        logger.info('Recode: yes for video')
                         return True
                 elif track.track_type == 'Audio':
                     if track.channel_s > MAX_CHANNELS or not track.format.startswith(AUDIO_CODEC):
+                        logger.info('Recode: yes for audio')
                         return True
+        os.utime(file, (stinfo.st_atime, stinfo.st_mtime+157680000))
+    logger.info('Recode: no')
     return False
 
 
@@ -149,7 +165,7 @@ def signal_handler(signum, frame):
 
 
 if __name__ == '__main__':
-    setup_logger('.', 'media-convert.log', logging.DEBUG)
+    setup_logger(work_dir, 'media-convert.log', logging.DEBUG)
     logger = logging.getLogger(__name__)
     # Register signals, such as CTRL + C
     signal.signal(signal.SIGINT, signal_handler)
@@ -181,14 +197,16 @@ if __name__ == '__main__':
         count += 1.0
         cur_file = normalize_path(path)
         logger.debug('Calculating MediaInfo for: ' + cur_file)
-        ffmpeg_cmd = ffmpeg_base_cmd + "\"" + cur_file + "\""
+        ffmpeg_cmd = ffmpeg_base_cmd + "\"" + cur_file + "\" -map 0 -c:s mov_text"
         video_cmd = ' -c:v copy '
         audio_cmd = ' -c:a copy '
         media_info = MediaInfo.parse(normalize_path(path))
         if MediaInfo.can_parse():
             for track in media_info.tracks:
                 if track.track_type == 'Video':
-                    if not track.format.startswith(VIDEO_CODEC) or track.bit_rate > MAX_BITRATE or track.height > MAX_HEIGHT:
+                    if not track.bit_rate:
+                        video_cmd = ffmpeg_video_encode
+                    elif not track.format.startswith(VIDEO_CODEC) or track.bit_rate > MAX_BITRATE or track.height > MAX_HEIGHT or track.width > MAX_WIDTH:
                         video_cmd = ffmpeg_video_encode
                 elif track.track_type == 'Audio':
                     if track.channel_s > MAX_CHANNELS or not track.format.startswith(AUDIO_CODEC):
