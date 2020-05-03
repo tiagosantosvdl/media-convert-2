@@ -52,7 +52,7 @@ watched_folders = ['/home/plex/Movies', '/home/plex/Series']
 exclude = []
 
 # Conditions for video recoding
-MAX_BITRATE = 7000000
+MAX_BITRATE = 5000000
 MAX_HEIGHT = 1080
 MAX_WIDTH = 1920
 VIDEO_CODEC = "AVC"
@@ -64,8 +64,9 @@ MAX_CHANNELS = 2
 AUDIO_CODEC = "AAC"
 
 # FFMPEG parameters
-ffmpeg_base_cmd = "nice -n 20 ffmpeg -err_detect ignore_err -loglevel error -hide_banner -hwaccel auto -i "
-ffmpeg_video_encode = " -c:v libx264 -preset faster -crf 22 -maxrate " + str(MAX_BITRATE) + " -vf \"scale=\'min(" + str(MAX_WIDTH) + ",iw)\':\'min(" + str(MAX_HEIGHT) + ",ih)\':force_original_aspect_ratio=decrease,pad=" + str(MAX_WIDTH) + ":" + str(MAX_HEIGHT) + ":(ow-iw)/2:(oh-ih)/2\" "
+ffmpeg_base_cmd = "nice -n 20 ffmpeg -err_detect ignore_err -loglevel error -hide_banner -hwaccel none -ignore_unknown -i "
+ffmpeg_middle_cmd = "\" -movflags faststart -map 0:v -map 0:a -map 0:s? -map_metadata -1 -sn"
+ffmpeg_video_encode = " -c:v libx264 -preset faster -crf 24 -maxrate " + str(MAX_BITRATE) + " -bufsize " + str(int(MAX_BITRATE/2)) + " -vf \"scale=\'min(" + str(MAX_WIDTH) + ",iw)\':\'min(" + str(MAX_HEIGHT) + ",ih)\':force_original_aspect_ratio=decrease,pad=" + str(MAX_WIDTH) + ":" + str(MAX_HEIGHT) + ":(ow-iw)/2:(oh-ih)/2\" "
 ffmpeg_audio_encode = " -c:a aac -ac 2 -b:a 192k "
 
 # Flag to denote whether to delete source files after successfull encode
@@ -74,15 +75,22 @@ DELETE = True
 # Flag to denote whether to just run MediaInfo on files
 JUST_CHECK = False
 
-# Log level
-LOG_LEVEL = logging.WARNING
-
 # Paths to all valid files
 paths = []
 # List of conversions
 commands = []
 
 #######################################################################
+
+
+class GracefulKiller:
+  kill_now = False
+  def __init__(self):
+    signal.signal(signal.SIGINT, self.exit_gracefully)
+    signal.signal(signal.SIGTERM, self.exit_gracefully)
+
+  def exit_gracefully(self,signum, frame):
+    self.kill_now = True
 
 
 def setup_logger(dir, filename, debug_lvl):
@@ -153,9 +161,10 @@ def signal_handler(signum, frame):
 
 
 if __name__ == '__main__':
-    setup_logger(work_dir, 'media-convert.log', LOG_LEVEL)
+    killer = GracefulKiller()
+    setup_logger(work_dir, 'media-convert.log', logging.DEBUG)
     logger = logging.getLogger(__name__)
-    # Register signals, such as CTRL + C
+    # Register signals, such as CTRL + Cf
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
     logger.info("######### Script Executed at " +
@@ -182,9 +191,11 @@ if __name__ == '__main__':
     t0 = time.time()
     count = 0.0
     for path in paths:
+        if killer.kill_now:
+            break
         count += 1.0
         cur_file = normalize_path(path)
-        ffmpeg_cmd = ffmpeg_base_cmd + "\"" + cur_file + "\" -map 0:v -map 0:a -map 0:s? -map_metadata -1 -c:s mov_text"
+        ffmpeg_cmd = ffmpeg_base_cmd + "\"" + cur_file + ffmpeg_middle_cmd
         video_cmd = ' -c:v copy '
         audio_cmd = ' -c:a copy '
         media_info = MediaInfo.parse(normalize_path(path))
@@ -207,6 +218,7 @@ if __name__ == '__main__':
                 delete(temp_file)
             print('Encoding ' + cur_file)
             logger.info('Encoding ' + cur_file)
+            logger.debug(ffmpeg_cmd)
             p = subprocess.Popen(
                 ffmpeg_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
             for line in p.stdout.readlines():
@@ -218,11 +230,13 @@ if __name__ == '__main__':
                 print('File processed successfully')
                 if DELETE:
                     delete(cur_file)
-                    move(temp_file, to_mp4_naming(cur_file))
+                    cur_file = to_mp4_naming(cur_file)
+                    move(temp_file, cur_file)
                 else:
                     if cur_file == to_mp4_naming(cur_file):
-                        cur_file = cur_file + ".new.mp4"
-                    move(temp_file, to_mp4_naming(cur_file))
+                        cur_file = cur_file + ".new"
+                    cur_file = to_mp4_naming(cur_file)
+                    move(temp_file, cur_file)
                 stinfo = os.stat(cur_file)
                 os.utime(cur_file, (stinfo.st_atime, stinfo.st_mtime+157680000))
 
