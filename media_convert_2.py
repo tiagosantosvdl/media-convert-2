@@ -56,6 +56,7 @@ MAX_BITRATE = 5000000
 MAX_HEIGHT = 1080
 MAX_WIDTH = 1920
 VIDEO_CODEC = "AVC"
+VIDEO_PROFILE = "Main"
 # Recode all videos ending with these extensions
 valid_extensions = ['rmvb', 'mkv', 'avi', 'mov', 'wmv']
 
@@ -64,10 +65,10 @@ MAX_CHANNELS = 2
 AUDIO_CODEC = "AAC"
 
 # FFMPEG parameters
-ffmpeg_base_cmd = "nice -n 20 ffmpeg -err_detect ignore_err -loglevel error -hide_banner -hwaccel none -ignore_unknown -i "
-ffmpeg_middle_cmd = "\" -movflags faststart -map 0:v -map 0:a -map 0:s? -map_metadata -1 -sn"
-ffmpeg_video_encode = " -c:v libx264 -preset faster -crf 24 -maxrate " + str(MAX_BITRATE) + " -bufsize " + str(int(MAX_BITRATE/2)) + " -vf \"scale=\'min(" + str(MAX_WIDTH) + ",iw)\':\'min(" + str(MAX_HEIGHT) + ",ih)\':force_original_aspect_ratio=decrease,pad=" + str(MAX_WIDTH) + ":" + str(MAX_HEIGHT) + ":(ow-iw)/2:(oh-ih)/2\" "
-ffmpeg_audio_encode = " -c:a aac -ac 2 -b:a 192k "
+ffmpeg_base_cmd = "nice -n 20 ffmpeg -loglevel error -hide_banner -i "
+ffmpeg_video_encode = " -c:v libx264 -preset faster -tune zerolatency -profile:v main -pix_fmt yuv420p -crf 23 -maxrate " + str(MAX_BITRATE) + " -bufsize " + str(int(MAX_BITRATE/2)) + " -vf \"scale=\'min(" + str(MAX_WIDTH) + ",iw)\':\'min(" + str(MAX_HEIGHT) + ",ih)\':force_original_aspect_ratio=decrease,pad=" + str(MAX_WIDTH) + ":" + str(MAX_HEIGHT) + ":(ow-iw)/2:(oh-ih)/2\""
+ffmpeg_audio_encode = " -c:a aac -ac 2 -b:a 192k"
+ffmpeg_middle_cmd = " -map_metadata -1 -movflags +faststart"
 
 # Flag to denote whether to delete source files after successfull encode
 DELETE = True
@@ -195,9 +196,9 @@ if __name__ == '__main__':
             break
         count += 1.0
         cur_file = normalize_path(path)
-        ffmpeg_cmd = ffmpeg_base_cmd + "\"" + cur_file + ffmpeg_middle_cmd
-        video_cmd = ' -c:v copy '
-        audio_cmd = ' -c:a copy '
+        ffmpeg_cmd = ffmpeg_base_cmd + "\"" + cur_file + "\""
+        video_cmd = ' -c:v copy'
+        audio_cmd = ' -c:a copy'
         media_info = MediaInfo.parse(normalize_path(path))
         if MediaInfo.can_parse():
             for track in media_info.tracks:
@@ -206,10 +207,12 @@ if __name__ == '__main__':
                         video_cmd = ffmpeg_video_encode
                     elif not track.format.startswith(VIDEO_CODEC) or track.bit_rate > MAX_BITRATE or track.height > MAX_HEIGHT or track.width > MAX_WIDTH:
                         video_cmd = ffmpeg_video_encode
+                    elif track.format.startswith(VIDEO_CODEC) and not track.format_profile.startswith(VIDEO_PROFILE):
+                        video_cmd = ffmpeg_video_encode
                 elif track.track_type == 'Audio':
                     if track.channel_s > MAX_CHANNELS or not track.format.startswith(AUDIO_CODEC):
                         audio_cmd = ffmpeg_audio_encode
-        ffmpeg_cmd = ffmpeg_cmd + video_cmd + audio_cmd + "\"" + temp_file + "\""
+        ffmpeg_cmd = ffmpeg_cmd + video_cmd + audio_cmd + ffmpeg_middle_cmd + " \"" + temp_file + "\""
 
         if JUST_CHECK:
             commands.append(ffmpeg_cmd)
