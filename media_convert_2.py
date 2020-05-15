@@ -68,7 +68,7 @@ AUDIO_CODEC = "AAC"
 ffmpeg_base_cmd = "nice -n 20 ffmpeg -loglevel error -hide_banner -i "
 ffmpeg_video_encode = " -c:v libx264 -preset faster -tune zerolatency -profile:v main -pix_fmt yuv420p -crf 23 -maxrate " + str(MAX_BITRATE) + " -bufsize " + str(int(MAX_BITRATE/2)) + " -vf \"scale=\'min(" + str(MAX_WIDTH) + ",iw)\':\'min(" + str(MAX_HEIGHT) + ",ih)\':force_original_aspect_ratio=decrease\""
 ffmpeg_audio_encode = " -c:a aac -ac 2 -b:a 192k"
-ffmpeg_middle_cmd = " -max_muxing_queue_size 1024 -map_metadata -1 -movflags +faststart"
+ffmpeg_middle_cmd = " -max_muxing_queue_size 2048 -map_metadata -1 -movflags +faststart"
 
 # Flag to denote whether to delete source files after successfull encode
 DELETE = True
