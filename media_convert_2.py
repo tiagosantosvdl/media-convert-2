@@ -48,7 +48,7 @@ work_dir = '/home/plex/'
 temp_file = work_dir + 'temp.' + EXT
 
 # A list of directories to scan
-watched_folders = ['/home/plex/Movies', '/home/plex/Series']
+watched_folders = ['/home/plex/Classes', '/home/plex/Movies', '/home/plex/Series']
 exclude = []
 
 # Conditions for video recoding
@@ -66,9 +66,9 @@ AUDIO_CODEC = "AAC"
 
 # FFMPEG parameters
 ffmpeg_base_cmd = "nice -n 20 ffmpeg -loglevel error -hide_banner -i "
-ffmpeg_video_encode = " -c:v libx264 -preset faster -tune zerolatency -profile:v main -pix_fmt yuv420p -crf 23 -maxrate " + str(MAX_BITRATE) + " -bufsize " + str(int(MAX_BITRATE/2)) + " -vf \"scale=\'min(" + str(MAX_WIDTH) + ",iw)\':\'min(" + str(MAX_HEIGHT) + ",ih)\':force_original_aspect_ratio=decrease,pad=" + str(MAX_WIDTH) + ":" + str(MAX_HEIGHT) + ":(ow-iw)/2:(oh-ih)/2\""
+ffmpeg_video_encode = " -c:v libx264 -preset faster -tune zerolatency -profile:v main -pix_fmt yuv420p -crf 23 -maxrate " + str(MAX_BITRATE) + " -bufsize " + str(int(MAX_BITRATE/2)) + " -vf \"scale=\'min(" + str(MAX_WIDTH) + ",iw)\':\'min(" + str(MAX_HEIGHT) + ",ih)\':force_original_aspect_ratio=decrease\""
 ffmpeg_audio_encode = " -c:a aac -ac 2 -b:a 192k"
-ffmpeg_middle_cmd = " -map_metadata -1 -movflags +faststart"
+ffmpeg_middle_cmd = " -max_muxing_queue_size 1024 -map_metadata -1 -movflags +faststart"
 
 # Flag to denote whether to delete source files after successfull encode
 DELETE = True
@@ -114,14 +114,14 @@ def setup_logger(dir, filename, debug_lvl):
 def needs_convert(file):
     for extension in valid_extensions:
         if file.endswith(extension):
-            logger.debug('Change format: ' + file)
+            logger.warning('Change format: ' + file)
             return True
     if file.endswith(EXT):
         stinfo = os.stat(file)
         if stinfo.st_mtime > stinfo.st_atime:
             logger.debug('Ignore: ' + file)
             return False
-        logger.debug('Recode: ' + file)
+        logger.warning('Recode: ' + file)
         return True
     return False
 
@@ -173,7 +173,6 @@ if __name__ == '__main__':
 
     for base_path in watched_folders:
         base_path = normalize_path(base_path)
-        print('Searching for files in ' + base_path)
         logger.info('Searching for files in ' + base_path)
         t0 = time.time()
         for root, dirs, files in os.walk(base_path, topdown=True):
@@ -183,12 +182,11 @@ if __name__ == '__main__':
                     path = os.path.join(root, file)
                     paths.append(normalize_path(path))
         t1 = time.time()
-        print('[Directory Scan] Execution took %s seconds' % str(round(t1-t0,0)))
+        logger.info('[Directory Scan] Execution took %s seconds' % str(round(t1-t0,0)))
     logger.info('=====Scan Complete=====')
     logger.info('Total files scanned: ' + str(len(paths)))
-    print('Total files scanned: ' + str(len(paths)))
 
-    print('Converting...')
+    logger.info('Converting...')
     t0 = time.time()
     count = 0.0
     for path in paths:
@@ -212,6 +210,19 @@ if __name__ == '__main__':
                 elif track.track_type == 'Audio':
                     if track.channel_s > MAX_CHANNELS or not track.format.startswith(AUDIO_CODEC):
                         audio_cmd = ffmpeg_audio_encode
+                elif track.track_type == 'Text' and track.codec_id.startswith('S_TEXT'):
+                    subname = str(track.track_id)
+                    if track.language:
+                        subname = track.language
+                    parts = cur_file.split('.')
+                    parts[len(parts)-1] = subname
+                    subfile = '.'.join(parts) + ".srt"
+                    logger.info('Extracting subtitle: ' + subfile)
+                    sub_cmd = "ffmpeg -loglevel error -hide_banner -i \"" + cur_file + "\" -map 0:" + str(int(track.track_id)-1) + " \"" + subfile + "\""
+                    p = subprocess.Popen(sub_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                    for line in p.stdout.readlines():
+                        logger.error(line)
+                    retval = p.wait()
         ffmpeg_cmd = ffmpeg_cmd + video_cmd + audio_cmd + ffmpeg_middle_cmd + " \"" + temp_file + "\""
 
         if JUST_CHECK:
@@ -219,18 +230,16 @@ if __name__ == '__main__':
         else:
             if os.path.isfile(temp_file):
                 delete(temp_file)
-            print('Encoding ' + cur_file)
-            logger.info('Encoding ' + cur_file)
+            logger.warning('Encoding ' + cur_file)
             logger.debug(ffmpeg_cmd)
             p = subprocess.Popen(
                 ffmpeg_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
             for line in p.stdout.readlines():
-                logger.debug(line)
+                logger.error(line)
             retval = p.wait()
             logger.debug('Convert returned: ' + str(retval))
-            print('Convert finished')
             if retval == 0:
-                print('File processed successfully')
+                logger.info('File processed successfully')
                 if DELETE:
                     delete(cur_file)
                     cur_file = to_mp4_naming(cur_file)
@@ -244,9 +253,8 @@ if __name__ == '__main__':
                 os.utime(cur_file, (stinfo.st_atime, stinfo.st_mtime+157680000))
 
     t1 = time.time()
-    print('\n\n')
-    print('[Media Check] Execution took %s ms' % str(t1-t0))
+    logger.info('[Media Check] Execution took %s ms' % str(t1-t0))
 
     if JUST_CHECK:
         for cmd in commands:
-            print(cmd)
+            logger.info(cmd)
