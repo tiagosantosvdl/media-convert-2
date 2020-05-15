@@ -216,6 +216,10 @@ if __name__ == '__main__':
                         subname = track.language
                     parts = cur_file.split('.')
                     parts[len(parts)-1] = subname
+                    subcount = 1
+                    while os.path.isfile('.'.join(parts) + ".srt"):
+                        parts[len(parts)-1] = subname + str(subcount)
+                        subcount = subcount + 1
                     subfile = '.'.join(parts) + ".srt"
                     logger.info('Extracting subtitle: ' + subfile)
                     sub_cmd = "ffmpeg -loglevel error -hide_banner -i \"" + cur_file + "\" -map 0:" + str(int(track.track_id)-1) + " \"" + subfile + "\""
@@ -251,6 +255,9 @@ if __name__ == '__main__':
                     move(temp_file, cur_file)
                 stinfo = os.stat(cur_file)
                 os.utime(cur_file, (stinfo.st_atime, stinfo.st_mtime+157680000))
+            if retval < -1 or retval > 10:
+                logger.info('Process killed, exiting')
+                break
 
     t1 = time.time()
     logger.info('[Media Check] Execution took %s ms' % str(t1-t0))
