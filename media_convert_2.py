@@ -2,13 +2,20 @@
 # Copyright(c) 2019 Tiago Santos
 # Copyright(c) 2016 Joseph Milazzo
 #
-# Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files(the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+# Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation
+# files(the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy,
+# modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the
+# Software is furnished to do so, subject to the following conditions:
 #
 # The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 #
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE 
+# WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR 
+# COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, 
+# ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-# This file is to find and convert all avi/mkv/etc to mp4/m4v
+# This script will convert all the video files in your library to one format
+# The settings below are designed to optimize streaming to Chromecast
 #
 # Requirements:
 # Python 3
@@ -20,6 +27,9 @@
 #
 # Edit settings below
 # Run with "python3 media_convert_2.py"
+# This script has been tested on Linux only, but should work on windows
+# To run on Windows, be sure to remove the "nice -n 20" part from the beggining of ffmpeg_base_cmd
+# and add the ffmpeg folder to PATH or insert the full path on ffmpeg_base_cmd
 
 # This is based off of the media-convert script created by Joseph Milazzo
 # https://bitbucket.org/majora2007/media-convert/src/master/
@@ -34,17 +44,18 @@ import psutil
 import time
 import sys
 
-
 #######################################################################
-#                       Variables
+#                            Variables                                #
+#######################################################################
 
-# EXT should be either mp4 or m4v. m4v should be chosen if you have multi-track audio and Apple TV users
+# Desired extension for files. Best container for streaming to chromecast is mp4
 global EXT
 EXT = 'mp4'
 
+# Where to store temporary and log files
 work_dir = '/home/plex/'
 
-# temporary enconding file
+# Temporary enconding file
 temp_file = work_dir + 'temp.' + EXT
 
 # A list of directories to scan
@@ -52,23 +63,24 @@ watched_folders = ['/home/plex/Classes', '/home/plex/Movies', '/home/plex/Series
 exclude = []
 
 # Conditions for video recoding
-MAX_BITRATE = 5000000
+MAX_BITRATE = 7000000
 MAX_HEIGHT = 1080
 MAX_WIDTH = 1920
 VIDEO_CODEC = "AVC"
 VIDEO_PROFILE = "Main"
+
 # Recode all videos ending with these extensions
 valid_extensions = ['rmvb', 'mkv', 'avi', 'mov', 'wmv']
 
-# Conditions for audio recoding
+# Conditions for audio recoding. Chromecast may force sorround audio on stereo TVs, so force channels to 2 to convert all files to stereo audio
 MAX_CHANNELS = 2
 AUDIO_CODEC = "AAC"
 
 # FFMPEG parameters
 ffmpeg_base_cmd = "nice -n 20 ffmpeg -loglevel error -hide_banner -i "
-ffmpeg_video_encode = " -c:v libx264 -preset faster -tune zerolatency -profile:v main -pix_fmt yuv420p -crf 23 -maxrate " + str(MAX_BITRATE) + " -bufsize " + str(int(MAX_BITRATE/2)) + " -vf \"scale=\'min(" + str(MAX_WIDTH) + ",iw)\':\'min(" + str(MAX_HEIGHT) + ",ih)\':force_original_aspect_ratio=decrease\""
+ffmpeg_video_encode = " -c:v libx264 -preset faster -tune zerolatency -profile:v main -pix_fmt yuv420p -crf 22 -maxrate " + str(MAX_BITRATE) + " -bufsize " + str(int(MAX_BITRATE/2)) + " -vf \"scale=\'min(" + str(MAX_WIDTH) + ",iw)\':\'min(" + str(MAX_HEIGHT) + ",ih)\':force_original_aspect_ratio=decrease\""
 ffmpeg_audio_encode = " -c:a aac -ac 2 -b:a 192k"
-ffmpeg_middle_cmd = " -max_muxing_queue_size 4096 -map_metadata -1 -movflags +faststart"
+ffmpeg_middle_cmd = " -max_muxing_queue_size 1024 -map_metadata -1 -movflags +faststart"
 
 # Flag to denote whether to delete source files after successfull encode
 DELETE = True
@@ -76,23 +88,18 @@ DELETE = True
 # Flag to denote whether to just run MediaInfo on files
 JUST_CHECK = False
 
-# Paths to all valid files
-paths = []
-# List of conversions
-commands = []
+# Verbosity level on log file
+LOG_LEVEL = logging.INFO
 
 #######################################################################
+#                            Program                                  #
+#######################################################################
 
+# Paths to all valid files
+paths = []
 
-class GracefulKiller:
-  kill_now = False
-  def __init__(self):
-    signal.signal(signal.SIGINT, self.exit_gracefully)
-    signal.signal(signal.SIGTERM, self.exit_gracefully)
-
-  def exit_gracefully(self,signum, frame):
-    self.kill_now = True
-
+# List of conversions
+commands = []
 
 def setup_logger(dir, filename, debug_lvl):
     log_file = filename
@@ -162,8 +169,7 @@ def signal_handler(signum, frame):
 
 
 if __name__ == '__main__':
-    killer = GracefulKiller()
-    setup_logger(work_dir, 'media-convert.log', logging.DEBUG)
+    setup_logger(work_dir, 'media-convert.log', LOG_LEVEL)
     logger = logging.getLogger(__name__)
     # Register signals, such as CTRL + Cf
     signal.signal(signal.SIGINT, signal_handler)
@@ -186,12 +192,11 @@ if __name__ == '__main__':
     logger.info('=====Scan Complete=====')
     logger.info('Total files scanned: ' + str(len(paths)))
 
-    logger.info('Converting...')
+    if len(paths) > 0:
+        logger.info('Converting...')
     t0 = time.time()
     count = 0.0
     for path in paths:
-        if killer.kill_now:
-            break
         count += 1.0
         cur_file = normalize_path(path)
         ffmpeg_cmd = ffmpeg_base_cmd + "\"" + cur_file + "\""
@@ -227,6 +232,9 @@ if __name__ == '__main__':
                     for line in p.stdout.readlines():
                         logger.error(line)
                     retval = p.wait()
+                    if retval < -1 or retval > 10:
+                        logger.error('Error: ffmpeg process killed, exiting')
+                        sys.exit(1)
         ffmpeg_cmd = ffmpeg_cmd + video_cmd + audio_cmd + ffmpeg_middle_cmd + " \"" + temp_file + "\""
 
         if JUST_CHECK:
@@ -256,12 +264,13 @@ if __name__ == '__main__':
                 stinfo = os.stat(cur_file)
                 os.utime(cur_file, (stinfo.st_atime, stinfo.st_mtime+157680000))
             if retval < -1 or retval > 10:
-                logger.info('Process killed, exiting')
-                break
+                logger.error('Error: ffmpeg process killed, exiting')
+                sys.exit(1)
 
     t1 = time.time()
-    logger.info('[Media Check] Execution took %s ms' % str(t1-t0))
+    logger.info('[Media Check] Execution took %s s' % str(round(t1-t0,1)))
 
     if JUST_CHECK:
         for cmd in commands:
             logger.info(cmd)
+    sys.exit(0)
