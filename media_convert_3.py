@@ -71,7 +71,7 @@ watched_folders = ['/home/plex/Classes', '/home/plex/Movies', '/home/plex/Series
 exclude = []
 
 # Conditions for video recoding
-MAX_BITRATE = 7000000
+MAX_BITRATE = 5000000
 MAX_HEIGHT = 1080
 MAX_WIDTH = 1920
 VIDEO_CODEC = "AVC"
@@ -86,7 +86,7 @@ AUDIO_CODEC = "AAC"
 
 # FFMPEG parameters
 ffmpeg_base_cmd = "nice -n 20 ffmpeg -loglevel error -hide_banner -y -i "
-ffmpeg_video_encode = " -c:v libx264 -preset faster -tune zerolatency -profile:v main -pix_fmt yuv420p -crf 22 -maxrate " + str(MAX_BITRATE) + " -bufsize " + str(int(MAX_BITRATE/2)) + " -vf \"scale=\'min(" + str(MAX_WIDTH) + ",iw)\':\'min(" + str(MAX_HEIGHT) + ",ih)\':force_original_aspect_ratio=decrease\""
+ffmpeg_video_encode = " -c:v libx264 -preset faster -tune zerolatency -profile:v main -pix_fmt yuv420p -crf 23 -b:v 0 -maxrate " + str(MAX_BITRATE) + " -bufsize " + str(int(MAX_BITRATE/2)) + " -vf \"scale=\'min(" + str(MAX_WIDTH) + ",iw)\':\'min(" + str(MAX_HEIGHT) + ",ih)\':force_original_aspect_ratio=decrease\""
 ffmpeg_audio_encode = " -c:a aac -ac 2 -b:a 192k"
 ffmpeg_middle_cmd = " -max_muxing_queue_size 1024 -map_metadata -1 -movflags +faststart"
 
@@ -111,15 +111,14 @@ ssh_host = "192.168.1.1"
 ssh_port = 22
 ssh_user = "johndoe"
 ssh_password = "supersecret"
-ssh_key = "/path/to/key"
+ssh_key = "/path/to/keyfile"
 
 # This folder must contain the ffmpeg executable and will store the temporary video files. 
 # Use an exclusive folder for this as files may be deleted or overwritten.
-# This folder will be prefixed on both ffmpeg command and input and out files, so keep the name formating consistent with the OS where this will be running
 ssh_folder = "C:\\ffmpeg"
 
 ssh_ffmpeg_base_cmd = "ffmpeg.exe -loglevel error -hide_banner -y -i "
-ssh_ffmpeg_video_encode = "-c:v h264_nvenc -preset llhq -zerolatency 1 -profile:v main -pix_fmt yuv420p -cq 22 -maxrate " + str(MAX_BITRATE) + " -bufsize " + str(int(MAX_BITRATE/2)) + " -vf \"scale=\'min(" + str(MAX_WIDTH) + ",iw)\':\'min(" + str(MAX_HEIGHT) + ",ih)\':force_original_aspect_ratio=decrease\""
+ssh_ffmpeg_video_encode = "-c:v h264_nvenc -preset slow -zerolatency 1 -profile:v main -pix_fmt yuv420p -cq 24 -qmin 23 -qmax 25 -b:v 0 -maxrate " + str(MAX_BITRATE) + " -bufsize " + str(int(MAX_BITRATE/2)) + " -vf \"scale=\'min(" + str(MAX_WIDTH) + ",iw)\':\'min(" + str(MAX_HEIGHT) + ",ih)\':force_original_aspect_ratio=decrease\""
 ssh_ffmpeg_audio_encode = " -c:a aac -ac 2 -b:a 192k"
 ssh_ffmpeg_middle_cmd = " -max_muxing_queue_size 1024 -map_metadata -1 -movflags +faststart"
 
