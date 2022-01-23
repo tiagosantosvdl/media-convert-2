@@ -67,7 +67,7 @@ work_dir = '/home/plex/'
 temp_file = work_dir + 'temp.' + EXT
 
 # A list of directories to scan
-watched_folders = ['/home/plex/Classes', '/home/plex/Movies', '/home/plex/Series']
+watched_folders = ['/home/plex/video']
 exclude = []
 
 # Conditions for video recoding
@@ -78,7 +78,7 @@ VIDEO_CODEC = "AVC"
 VIDEO_PROFILE = "Main"
 
 # Recode all videos ending with these extensions
-valid_extensions = ['rmvb', 'mkv', 'avi', 'mov', 'wmv']
+valid_extensions = ['rmvb', 'mkv', 'avi', 'mov', 'wmv', 'm4v']
 
 # Conditions for audio recoding. Chromecast may force sorround audio on stereo TVs, so force channels to 2 to convert all files to stereo audio
 MAX_CHANNELS = 2
@@ -86,7 +86,7 @@ AUDIO_CODEC = "AAC"
 
 # FFMPEG parameters
 ffmpeg_base_cmd = "nice -n 20 ffmpeg -loglevel error -hide_banner -y -i "
-ffmpeg_video_encode = " -c:v libx264 -preset faster -tune zerolatency -profile:v main -pix_fmt yuv420p -crf 23 -b:v 0 -maxrate " + str(MAX_BITRATE) + " -bufsize " + str(int(MAX_BITRATE/2)) + " -vf \"scale=\'min(" + str(MAX_WIDTH) + ",iw)\':\'min(" + str(MAX_HEIGHT) + ",ih)\':force_original_aspect_ratio=decrease\""
+ffmpeg_video_encode = " -c:v libx264 -preset faster -tune zerolatency -profile:v main -pix_fmt yuv420p -crf 23 -b:v 0 -maxrate " + str(MAX_BITRATE) + " -bufsize " + str(int(MAX_BITRATE/2)) + " -vf \"pad=\'ceil(min(" + str(MAX_WIDTH) + ",iw)/2)*2\':\'ceil(min(" + str(MAX_HEIGHT) + ",ih)/2)*2\',scale=\'min(" + str(MAX_WIDTH) + ",iw)\':\'min(" + str(MAX_HEIGHT) + ",ih)\':force_original_aspect_ratio=decrease\""
 ffmpeg_audio_encode = " -c:a aac -ac 2 -b:a 192k"
 ffmpeg_middle_cmd = " -max_muxing_queue_size 1024 -map_metadata -1 -movflags +faststart"
 
@@ -118,7 +118,7 @@ ssh_key = "/path/to/keyfile"
 ssh_folder = "C:\\ffmpeg"
 
 ssh_ffmpeg_base_cmd = "ffmpeg.exe -loglevel error -hide_banner -y -i "
-ssh_ffmpeg_video_encode = "-c:v h264_nvenc -preset slow -zerolatency 1 -profile:v main -pix_fmt yuv420p -cq 24 -qmin 23 -qmax 25 -b:v 0 -maxrate " + str(MAX_BITRATE) + " -bufsize " + str(int(MAX_BITRATE/2)) + " -vf \"scale=\'min(" + str(MAX_WIDTH) + ",iw)\':\'min(" + str(MAX_HEIGHT) + ",ih)\':force_original_aspect_ratio=decrease\""
+ssh_ffmpeg_video_encode = "-c:v h264_nvenc -preset slow -zerolatency 1 -profile:v main -pix_fmt yuv420p -cq 24 -qmin 23 -qmax 25 -b:v 0 -maxrate " + str(MAX_BITRATE) + " -bufsize " + str(int(MAX_BITRATE/2)) + " -vf \"pad=\'ceil(min(" + str(MAX_WIDTH) + ",iw)/2)*2\':\'ceil(min(" + str(MAX_HEIGHT) + ",ih)/2)*2\',scale=\'min(" + str(MAX_WIDTH) + ",iw)\':\'min(" + str(MAX_HEIGHT) + ",ih)\':force_original_aspect_ratio=decrease\""
 ssh_ffmpeg_audio_encode = " -c:a aac -ac 2 -b:a 192k"
 ssh_ffmpeg_middle_cmd = " -max_muxing_queue_size 1024 -map_metadata -1 -movflags +faststart"
 
@@ -245,17 +245,19 @@ if __name__ == '__main__':
         except Exception as e:
             logger.error("SSH Error: " + str(e))
             ssh_enabled = False
-        try:
-            sftp_client = ssh_client.open_sftp()
-        except Exception as e:
-            logger.error("Error opening SFTP session: " + str(e))
-            ssh_enabled = False
-        try:
-            sftp_client.chdir(ssh_folder)
-        except IOError:
-            logger.error("Invalid SFTP folder")
-            ssh_client.close()
-            ssh_enabled = False
+        if ssh_enabled:
+            try:
+                sftp_client = ssh_client.open_sftp()
+            except Exception as e:
+                logger.error("Error opening SFTP session: " + str(e))
+                ssh_enabled = False
+        if ssh_enabled:
+            try:
+                sftp_client.chdir(ssh_folder)
+            except IOError:
+                logger.error("Invalid SFTP folder")
+                ssh_client.close()
+                ssh_enabled = False
         if ssh_enabled:
             logger.info("SSH and SFTP sessions created successfully")
         else:
@@ -280,6 +282,9 @@ if __name__ == '__main__':
                     elif not track.format.startswith(VIDEO_CODEC) or track.bit_rate > MAX_BITRATE or track.height > MAX_HEIGHT or track.width > MAX_WIDTH:
                         video_cmd = ffmpeg_video_encode
                         need_remote = True
+                    elif track.height % 2 or track.width %2:
+                        video_cmd = ffmpeg_video_encode
+                        need_remote = True
                     elif track.format.startswith(VIDEO_CODEC) and not track.format_profile.startswith(VIDEO_PROFILE):
                         video_cmd = ffmpeg_video_encode
                         need_remote = True
@@ -287,7 +292,7 @@ if __name__ == '__main__':
                     if track.channel_s > MAX_CHANNELS or not track.format.startswith(AUDIO_CODEC):
                         redo_audio = True
                         audio_cmd = ffmpeg_audio_encode
-                elif track.track_type == 'Text' and track.codec_id.startswith('S_TEXT'):
+                elif track.track_type == 'Text' and track.codec_id and track.codec_id.startswith('S_TEXT'):
                     subname = str(track.track_id)
                     if track.language:
                         subname = track.language
@@ -318,6 +323,7 @@ if __name__ == '__main__':
                 remote_infile = False
             if remote_infile:
                 remote_delete(in_file)
+            logger.info("Sending file: " + cur_file)
             remote_infile = sftp_client.put(cur_file, in_file)
             if remote_infile:
                 logger.info("File sent successfully")
