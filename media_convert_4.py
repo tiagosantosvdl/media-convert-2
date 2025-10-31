@@ -35,7 +35,7 @@ Requirements: Python 3, ffmpeg with VAAPI+QSV, sqlite3.pp
 Usage:
 
 Edit settings below
-Run with "python3 media_convert_4.py"
+Run with "python3 media_convert_2.py"
 
 # This is based off of the media-convert script created by Joseph Milazzo
 # https://bitbucket.org/majora2007/media-convert/src/master/
@@ -50,6 +50,7 @@ import logging.handlers as lh
 import sqlite3
 import subprocess
 import signal
+import shutil
 from typing import Optional, Tuple
 
 #######################################################################
@@ -229,11 +230,15 @@ def build_two_pass_cmds(input_path: str, output_path: str) -> Tuple[str, str]:
 #                               Main                                   #
 #######################################################################
 
+def signal_handler(signum, frame):
+    pass
+    sys.exit(0)
+
 def main() -> int:
     logger = setup_logger()
     logger.info("==== Media Convert V3 start ====")
-    signal.signal(signal.SIGINT, lambda s, f: logger.info("SIGINT received"))
-    signal.signal(signal.SIGTERM, lambda s, f: logger.info("SIGTERM received"))
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
 
     conn = db_connect(DB_PATH)
     logger.debug(f"DB opened at {DB_PATH}")
@@ -301,22 +306,39 @@ def main() -> int:
             r2 = subprocess.call(p2, shell=True, cwd=work_dir)
             logger.debug(f"Pass2 exit: {r2}")
             if r2 == 0:
-                if DELETE:
-                    try:
-                        os.remove(in_path)
-                    except Exception as e:
-                        logger.warning(f"Delete source failed, will overwrite: {e}")
-                # move final file
                 try:
-                    os.replace(temp_file, out_path)
+                    shutil.move(temp_file, out_path+".new")  # cross-device safe
+                    #os.replace(temp_file, out_path)
                 except Exception as e:
                     logger.error(f"Move output failed: {e}")
                     failed += 1
                     continue
-                new_size, new_mtime = file_signature(out_path)
-                db_upsert(conn, out_path, new_size, new_mtime, status='ok', note='encoded-av1')
-                processed += 1
-                logger.info(f"Encoding success: {in_path} -> {out_path}")
+                else:
+                    if DELETE:
+                        try:
+                            os.remove(in_path)
+                        except Exception as e:
+                            logger.warning(f"Delete source failed, will overwrite: {e}")
+                    else:
+                        try:
+                            shutil.move(in_path, in_path+".original")  # cross-device safe
+                            #os.replace(temp_file, out_path)
+                         except Exception as e:
+                            logger.error(f"Move output failed: {e}")
+                            failed += 1
+                            continue
+                    try:
+                        shutil.move(out_path+".new", out_path)  # cross-device safe
+                        #os.replace(temp_file, out_path)
+                    except Exception as e:
+                        logger.error(f"Move output failed: {e}")
+                        failed += 1
+                        continue
+                    else:
+                        new_size, new_mtime = file_signature(out_path)
+                        db_upsert(conn, out_path, new_size, new_mtime, status='ok', note='encoded-av1')
+                        processed += 1
+                        logger.info(f"Encoding success: {in_path} -> {out_path}")
             else:
                 failed += 1
                 db_upsert(conn, in_path, size, mtime, status='error', note=f'pass2 exit {r2}')
