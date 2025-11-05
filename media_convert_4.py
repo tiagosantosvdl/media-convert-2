@@ -71,7 +71,7 @@ LOG_MAX_BYTES = 10 * 1024 * 1024  # 10 MB per file
 LOG_BACKUP_COUNT = 5
 
 # Watched folders and convertible extensions
-watched_folders = ["/var/lib/media/content/test"]
+watched_folders = ["/var/lib/media/content/movies", "/var/lib/media/content/series"]
 exclude = []
 convertible_extensions = ["rmvb", "mkv", "avi", "mov", "wmv", "m4v", "mp4"]
 
@@ -138,6 +138,9 @@ def file_signature(path: str) -> Tuple[int, float]:
     st = os.stat(path)
     return st.st_size, st.st_mtime
 
+def run(cmd: list[str]) -> None:
+    subprocess.run(cmd, check=True)
+
 #######################################################################
 #                               Database                                #
 #######################################################################
@@ -191,15 +194,39 @@ def db_upsert(conn: sqlite3.Connection, path: str, size: int, mtime: float, stat
 #                        FFmpeg command builder                        #
 #######################################################################
 
-def build_two_pass_cmds(input_path: str, output_path: str) -> Tuple[str, str]:
-    # Shared filter chain with tonemap + scale + hwmap(qsv)
-    vf = (
-        f"tonemap_vaapi=matrix=bt709:primaries=bt709:transfer=bt709:format=p010,"
-        f"scale_vaapi=w='ceil(min({TARGET_WIDTH},iw)/8)*8':h='ceil(min({TARGET_HEIGHT},ih)/8)*8':"
-        f"force_original_aspect_ratio=decrease:format=p010,"
-        f"hwmap=derive_device=qsv,format=qsv"
+def probe_field(inp: str, entry: str) -> str:
+    cmd = [
+        "ffprobe", "-v", "error", "-probesize", "1M", 
+        "-analyzeduration", "0", "-select_streams", "v:0",
+        "-show_entries", f"stream={entry}",
+        "-of", "default=nokey=1:noprint_wrappers=1", inp
+    ]
+    p = subprocess.run(cmd, check=False, capture_output=True, text=True)
+    return (p.stdout or "").strip().lower()
+
+def is_hdr(inp: str) -> bool:
+    ct = probe_field(inp, "color_transfer")      # e.g. smpte2084, arib-std-b67
+    cp = probe_field(inp, "color_primaries")     # e.g. bt2020
+    return (
+        ("smpte2084" in ct) or
+        ("arib-std-b67" in ct) or   # HLG
+        ("bt2020" in cp)
     )
 
+#######################################################################
+#                        FFmpeg command builder                        #
+#######################################################################
+
+def build_two_pass_cmds(input_path: str, output_path: str) -> Tuple[str, str]:
+    # Shared filter chain with tonemap + scale + hwmap(qsv)
+
+    scale = "scale_vaapi=w='ceil(min(3840,iw)/8)*8':h='ceil(min(2160,ih)/8)*8':force_original_aspect_ratio=decrease:format=p010"
+    hwmap = "hwmap=derive_device=qsv,format=qsv"
+    vf = f"{scale},{hwmap}"
+    if is_hdr(input_path):
+        tm = "tonemap_vaapi=matrix=bt709:primaries=bt709:transfer=bt709:format=p010"
+        vf = f"{tm},{scale},{hwmap}"
+  
     pass1 = (
         "ffmpeg -hide_banner -loglevel error -y "
         "-probesize 200M -analyzeduration 200M -fflags +genpts+discardcorrupt+nobuffer -err_detect ignore_err "
@@ -236,7 +263,7 @@ def signal_handler(signum, frame):
 
 def main() -> int:
     logger = setup_logger()
-    logger.info("==== Media Convert V3 start ====")
+    logger.info("==== Media Convert V4 start ====")
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
@@ -306,39 +333,31 @@ def main() -> int:
             r2 = subprocess.call(p2, shell=True, cwd=work_dir)
             logger.debug(f"Pass2 exit: {r2}")
             if r2 == 0:
+                in_path_original = in_path + ".old"
+                while os.path.isfile(in_path_original):
+                    in_path_original = in_path_original + ".old"
                 try:
-                    shutil.move(temp_file, out_path+".new")  # cross-device safe
+                    shutil.move(in_path, in_path_original)
+                except Exception as e:
+                    logger.error(f"Move original file failed: {e}")
+                    failed += 1
+                    continue
+                try:
+                    shutil.move(temp_file, out_path)  # cross-device safe
                     #os.replace(temp_file, out_path)
                 except Exception as e:
                     logger.error(f"Move output failed: {e}")
                     failed += 1
                     continue
-                else:
-                    if DELETE:
-                        try:
-                            os.remove(in_path)
-                        except Exception as e:
-                            logger.warning(f"Delete source failed, will overwrite: {e}")
-                    else:
-                        try:
-                            shutil.move(in_path, in_path+".original")  # cross-device safe
-                            #os.replace(temp_file, out_path)
-                         except Exception as e:
-                            logger.error(f"Move output failed: {e}")
-                            failed += 1
-                            continue
+                if DELETE:
                     try:
-                        shutil.move(out_path+".new", out_path)  # cross-device safe
-                        #os.replace(temp_file, out_path)
+                        os.remove(in_path_original)
                     except Exception as e:
-                        logger.error(f"Move output failed: {e}")
-                        failed += 1
-                        continue
-                    else:
-                        new_size, new_mtime = file_signature(out_path)
-                        db_upsert(conn, out_path, new_size, new_mtime, status='ok', note='encoded-av1')
-                        processed += 1
-                        logger.info(f"Encoding success: {in_path} -> {out_path}")
+                        logger.error(f"Delete source failed, will overwrite: {e}")
+                new_size, new_mtime = file_signature(out_path)
+                db_upsert(conn, out_path, new_size, new_mtime, status='ok', note='encoded-av1')
+                processed += 1
+                logger.info(f"Encoding success: {in_path} -> {out_path}")
             else:
                 failed += 1
                 db_upsert(conn, in_path, size, mtime, status='error', note=f'pass2 exit {r2}')
@@ -359,7 +378,7 @@ def main() -> int:
                 logger.debug("DB upsert skipped due to signature error")
 
     logger.info(f"Summary: processed={processed} skipped={skipped} failed={failed}")
-    logger.info("==== Media Convert V3 end ====")
+    logger.info("==== Media Convert V4 end ====")
     return 0
 
 
