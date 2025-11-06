@@ -66,7 +66,7 @@ temp_file = os.path.join(work_dir, f"temp.{EXT}")
 # Logging configuration
 LOG_DIR = "/var/log/media-convert"  # fallback to work_dir if not writable
 LOG_FILE = "media-convert.log"
-LOG_LEVEL = logging.INFO
+LOG_LEVEL = logging.WARNING
 LOG_MAX_BYTES = 10 * 1024 * 1024  # 10 MB per file
 LOG_BACKUP_COUNT = 5
 
@@ -140,6 +140,12 @@ def file_signature(path: str) -> Tuple[int, float]:
 
 def run(cmd: list[str]) -> None:
     subprocess.run(cmd, check=True)
+
+def _run(cmd: str, cwd: str) -> tuple[int, str]:
+    p = subprocess.run(cmd, shell=True, cwd=cwd, text=True,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return p.returncode, (p.stderr or "") + (p.stdout or "")
+
 
 #######################################################################
 #                               Database                                #
@@ -217,14 +223,21 @@ def is_hdr(inp: str) -> bool:
 #                        FFmpeg command builder                        #
 #######################################################################
 
-def build_two_pass_cmds(input_path: str, output_path: str) -> Tuple[str, str]:
+def build_two_pass_cmds(input_path: str, output_path: str, sw_tonemap: bool) -> Tuple[str, str]:
     # Shared filter chain with tonemap + scale + hwmap(qsv)
 
     scale = "scale_vaapi=w='ceil(min(3840,iw)/8)*8':h='ceil(min(2160,ih)/8)*8':force_original_aspect_ratio=decrease:format=p010"
     hwmap = "hwmap=derive_device=qsv,format=qsv"
     vf = f"{scale},{hwmap}"
     if is_hdr(input_path):
-        tm = "tonemap_vaapi=matrix=bt709:primaries=bt709:transfer=bt709:format=p010"
+        if sw_tonemap:
+            tm = (
+                "hwdownload,format=p010le,zscale=transferin=smpte2084:primariesin=bt2020:matrixin=bt2020nc:"
+                "transfer=linear:primaries=bt709:matrix=bt709,"
+                "format=gbrp16le,tonemap=tonemap=hable:desat=0,format=p010le,hwupload,format=vaapi"
+            )
+        else:
+            tm = "tonemap_vaapi=matrix=bt709:primaries=bt709:transfer=bt709:format=p010"
         vf = f"{tm},{scale},{hwmap}"
   
     pass1 = (
@@ -317,17 +330,25 @@ def main() -> int:
                 continue
 
             # Build and run two-pass encode
-            p1, p2 = build_two_pass_cmds(in_path, temp_file)
+            p1, p2 = build_two_pass_cmds(in_path, temp_file, False)
 
             logger.warning(f"Encoding start: {in_path}")
             logger.debug(f"Pass1 cmd: {p1} (cwd={work_dir})")
-            r1 = subprocess.call(p1, shell=True, cwd=work_dir)
+            r1, log1 = _run(p1, work_dir)
             logger.debug(f"Pass1 exit: {r1}")
             if r1 != 0:
-                failed += 1
-                db_upsert(conn, in_path, size, mtime, status='error', note=f'pass1 exit {r1}')
-                logger.error(f"Pass 1 failed for {in_path}")
-                continue
+                if "No mastering display data" in log1:
+                    logger.warning("Pass 1 failed with missing HDR mastering data. Retrying with software tonemap fallback.")
+                    p1, p2 = build_two_pass_cmds(in_path, temp_file, True)
+                    logger.warning(f"Encoding start: {in_path}")
+                    logger.debug(f"Pass1 cmd: {p1} (cwd={work_dir})")
+                    r1 = subprocess.call(p1, shell=True, cwd=work_dir)
+                if r1 != 0:
+                    logger.warning("Pass 1 failed")
+                    failed += 1
+                    db_upsert(conn, in_path, size, mtime, status='error', note=f'pass1 exit {r1}')
+                    logger.error(f"Pass 1 failed for {in_path}")
+                    continue
 
             logger.debug(f"Pass2 cmd: {p2} (cwd={work_dir})")
             r2 = subprocess.call(p2, shell=True, cwd=work_dir)
