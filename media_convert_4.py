@@ -18,7 +18,7 @@ COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER I
 ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 Local-only library scanner and video normalizer with SQLite tracking.
-- Scans watched folders for video files.
+- Scans watched folders for video files.a
 - Tracks processed files in SQLite.
 - Always re-encode every candidate not marked 'ok' in DB.
 - Video re-encode: AV1 (Intel QSV via VAAPI interop). Copies audio and subtitles.
@@ -66,7 +66,7 @@ temp_file = os.path.join(work_dir, f"temp.{EXT}")
 # Logging configuration
 LOG_DIR = "/var/log/media-convert"  # fallback to work_dir if not writable
 LOG_FILE = "media-convert.log"
-LOG_LEVEL = logging.WARNING
+LOG_LEVEL = logging.DEBUG
 LOG_MAX_BYTES = 10 * 1024 * 1024  # 10 MB per file
 LOG_BACKUP_COUNT = 5
 
@@ -138,12 +138,11 @@ def file_signature(path: str) -> Tuple[int, float]:
     st = os.stat(path)
     return st.st_size, st.st_mtime
 
-def run(cmd: list[str]) -> None:
-    subprocess.run(cmd, check=True)
-
-def _run(cmd: str, cwd: str) -> tuple[int, str]:
-    p = subprocess.run(cmd, shell=True, cwd=cwd, text=True,
-                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+def run(cmd: str, cwd: str, logger: logging.logger) -> tuple[int, str]:
+    p = subprocess.run(cmd, shell=True, cwd=cwd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert p.stdout is not None
+    for line in p.stdout:
+        logger.debug(line.rstrip())
     return p.returncode, (p.stderr or "") + (p.stdout or "")
 
 
@@ -197,7 +196,7 @@ def db_upsert(conn: sqlite3.Connection, path: str, size: int, mtime: float, stat
     conn.commit()
 
 #######################################################################
-#                        FFmpeg command builder                        #
+#                              HDR detection                          #
 #######################################################################
 
 def probe_field(inp: str, entry: str) -> str:
@@ -223,48 +222,34 @@ def is_hdr(inp: str) -> bool:
 #                        FFmpeg command builder                        #
 #######################################################################
 
-def build_two_pass_cmds(input_path: str, output_path: str, sw_tonemap: bool) -> Tuple[str, str]:
-    # Shared filter chain with tonemap + scale + hwmap(qsv)
-
-    scale = "scale_vaapi=w='ceil(min(3840,iw)/8)*8':h='ceil(min(2160,ih)/8)*8':force_original_aspect_ratio=decrease:format=p010"
+def build_cmd(input_path: str, output_path: str, sw_tonemap: bool) -> str:
+    scale = f"scale_vaapi=w='ceil(min({TARGET_WIDTH},iw)/8)*8':h='ceil(min({TARGET_HEIGHT},ih)/8)*8':force_original_aspect_ratio=decrease:format=p010"
     hwmap = "hwmap=derive_device=qsv,format=qsv"
     vf = f"{scale},{hwmap}"
     if is_hdr(input_path):
         if sw_tonemap:
             tm = (
-                "hwdownload,format=p010le,zscale=transferin=smpte2084:primariesin=bt2020:matrixin=bt2020nc:"
-                "transfer=linear:primaries=bt709:matrix=bt709,"
-                "format=gbrp16le,tonemap=tonemap=hable:desat=0,format=p010le,hwupload,format=vaapi"
+                "hwdownload,format=p010le,"
+                "libplacebo=tonemapping=bt.2390:color_primaries=bt709:color_trc=bt709:colorspace=bt709:peak_detect=true,"
+                "format=p010le,hwupload=extra_hw_frames=64,format=vaapi"
             )
         else:
             tm = "tonemap_vaapi=matrix=bt709:primaries=bt709:transfer=bt709:format=p010"
         vf = f"{tm},{scale},{hwmap}"
   
-    pass1 = (
-        "ffmpeg -hide_banner -loglevel error -y "
-        "-probesize 200M -analyzeduration 200M -fflags +genpts+discardcorrupt+nobuffer -err_detect ignore_err "
-        "-init_hw_device vaapi=va:/dev/dri/renderD128 -init_hw_device qsv=qsv@va -filter_hw_device va "
-        "-hwaccel vaapi -hwaccel_device va -hwaccel_output_format vaapi "
-        f"-i \"{input_path}\" "
-        f"-vf \"{vf}\" "
-        f"-c:v av1_qsv -preset {PRESET} -extbrc 1 -look_ahead_depth 100 -global_quality {GQ} -async_depth 4 -pass 1 "
-        "-g 120 -force_key_frames \"expr:gte(t,n_forced*2)\" -cluster_time_limit 5000 -cluster_size_limit 5242880 "
-        "-an -f null /dev/null"
-    )
-
-    pass2 = (
+    cmd = (
         "ffmpeg -hide_banner -loglevel error -y "
         "-init_hw_device vaapi=va:/dev/dri/renderD128 -init_hw_device qsv=qsv@va -filter_hw_device va "
         "-hwaccel vaapi -hwaccel_device va -hwaccel_output_format vaapi "
         f"-i \"{input_path}\" "
         "-map 0 -map_chapters 0 -map_metadata 0 -c:a copy -c:s copy "
         f"-vf \"{vf}\" "
-        f"-c:v av1_qsv -preset {PRESET} -extbrc 1 -look_ahead_depth 100 -global_quality {GQ} -async_depth 4 -pass 2 "
+        f"-c:v av1_qsv -preset {PRESET} -extbrc 1 -look_ahead_depth 100 -global_quality {GQ} -async_depth 4 "
         "-g 120 -force_key_frames \"expr:gte(t,n_forced*2)\" -cluster_time_limit 5000 -cluster_size_limit 5242880 "
         "-bsf:v av1_metadata=color_primaries=1:transfer_characteristics=1:matrix_coefficients=1:color_range=tv "
         f"\"{output_path}\""
     )
-    return pass1, pass2
+    return cmd
 
 #######################################################################
 #                               Main                                   #
@@ -323,58 +308,51 @@ def main() -> int:
             out_path = to_target_naming(in_path)
 
             if JUST_CHECK:
-                p1, p2 = build_two_pass_cmds(in_path, out_path if DELETE else temp_file)
-                logger.info(f"PASS1: {p1}")
-                logger.info(f"PASS2: {p2}")
+                cmd = build_cmd(in_path, out_path if DELETE else temp_file)
+                logger.info(f"Encoding command: {cmd}")
                 db_upsert(conn, in_path, size, mtime, status='ok', note='checked-only')
                 continue
 
-            # Build and run two-pass encode
-            p1, p2 = build_two_pass_cmds(in_path, temp_file, False)
+            cmd = build_cmd(in_path, temp_file, False)
 
             logger.warning(f"Encoding start: {in_path}")
-            logger.debug(f"Pass1 cmd: {p1} (cwd={work_dir})")
-            r1, log1 = _run(p1, work_dir)
-            logger.debug(f"Pass1 exit: {r1}")
-            if r1 != 0:
-                if "No mastering display data" in log1:
-                    logger.warning("Pass 1 failed with missing HDR mastering data. Retrying with software tonemap fallback.")
-                    p1, p2 = build_two_pass_cmds(in_path, temp_file, True)
+            logger.debug(f"Encoding cmd: {cmd} (cwd={work_dir})")
+            r, rlog = run(cmd, work_dir, logger)
+            logger.debug(f"Encoding exit: {r}")
+            if r != 0:
+                if "No mastering display data" in rlog:
+                    logger.warning("Encoding failed with missing HDR mastering data. Retrying with software tonemap fallback.")
+                    cmd = build_cmd(in_path, temp_file, True)
                     logger.warning(f"Encoding start: {in_path}")
-                    logger.debug(f"Pass1 cmd: {p1} (cwd={work_dir})")
-                    r1 = subprocess.call(p1, shell=True, cwd=work_dir)
-                if r1 != 0:
-                    logger.warning("Pass 1 failed")
+                    logger.debug(f"Encoding cmd: {cmd} (cwd={work_dir})")
+                    r = run(cmd, work_dir, logger)
+                if r != 0:
+                    logger.warning("Encoding failed")
                     failed += 1
-                    db_upsert(conn, in_path, size, mtime, status='error', note=f'pass1 exit {r1}')
-                    logger.error(f"Pass 1 failed for {in_path}")
+                    db_upsert(conn, in_path, size, mtime, status='error', note=f'ffmpeg exit {r}')
+                    logger.error(f"Encoding failed for {in_path}")
                     continue
-
-            logger.debug(f"Pass2 cmd: {p2} (cwd={work_dir})")
-            r2 = subprocess.call(p2, shell=True, cwd=work_dir)
-            logger.debug(f"Pass2 exit: {r2}")
-            if r2 == 0:
-                in_path_original = in_path + ".old"
-                while os.path.isfile(in_path_original):
-                    in_path_original = in_path_original + ".old"
+            in_path_original = in_path + ".old"
+            while os.path.isfile(in_path_original):
+                in_path_original = in_path_original + ".old"
+            try:
+                shutil.move(in_path, in_path_original)
+            except Exception as e:
+                logger.error(f"Move original file failed: {e}")
+                failed += 1
+                continue
+            try:
+                shutil.move(temp_file, out_path)  # cross-device safe
+                #os.replace(temp_file, out_path)
+            except Exception as e:
+                logger.error(f"Move output failed: {e}")
+                failed += 1
+                continue
+            if DELETE:
                 try:
-                    shutil.move(in_path, in_path_original)
+                    os.remove(in_path_original)
                 except Exception as e:
-                    logger.error(f"Move original file failed: {e}")
-                    failed += 1
-                    continue
-                try:
-                    shutil.move(temp_file, out_path)  # cross-device safe
-                    #os.replace(temp_file, out_path)
-                except Exception as e:
-                    logger.error(f"Move output failed: {e}")
-                    failed += 1
-                    continue
-                if DELETE:
-                    try:
-                        os.remove(in_path_original)
-                    except Exception as e:
-                        logger.error(f"Delete source failed, will overwrite: {e}")
+                    logger.error(f"Delete source failed, will overwrite: {e}")
                 new_size, new_mtime = file_signature(out_path)
                 db_upsert(conn, out_path, new_size, new_mtime, status='ok', note='encoded-av1')
                 processed += 1
