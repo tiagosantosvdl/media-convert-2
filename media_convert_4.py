@@ -66,7 +66,7 @@ temp_file = os.path.join(work_dir, f"temp.{EXT}")
 # Logging configuration
 LOG_DIR = "/var/log/media-convert"  # fallback to work_dir if not writable
 LOG_FILE = "media-convert.log"
-LOG_LEVEL = logging.DEBUG
+LOG_LEVEL = logging.INFO
 LOG_MAX_BYTES = 10 * 1024 * 1024  # 10 MB per file
 LOG_BACKUP_COUNT = 5
 
@@ -242,11 +242,11 @@ def build_cmd(input_path: str, output_path: str, sw_tonemap: bool) -> str:
         "-init_hw_device vaapi=va:/dev/dri/renderD128 -init_hw_device qsv=qsv@va -filter_hw_device va "
         "-hwaccel vaapi -hwaccel_device va -hwaccel_output_format vaapi "
         f"-i \"{input_path}\" "
-        "-map 0 -map_chapters 0 -map_metadata 0 -c:a copy -c:s copy "
-        f"-vf \"{vf}\" "
-        f"-c:v av1_qsv -preset {PRESET} -extbrc 1 -look_ahead_depth 100 -global_quality {GQ} -async_depth 4 "
+        "-map 0:v:0 -map 0:a? -map 0:s? -map_chapters 0 -map_metadata 0 -c:a copy -c:s srt "
+        f"-vf:v:0 \"{vf}\" "
+        f"-c:v:0 av1_qsv -preset {PRESET} -extbrc 1 -look_ahead_depth 100 -global_quality {GQ} -async_depth 4 "
         "-g 120 -force_key_frames \"expr:gte(t,n_forced*2)\" -cluster_time_limit 5000 -cluster_size_limit 5242880 "
-        "-bsf:v av1_metadata=color_primaries=1:transfer_characteristics=1:matrix_coefficients=1:color_range=tv "
+        "-bsf:v:0 av1_metadata=color_primaries=1:transfer_characteristics=1:matrix_coefficients=1:color_range=tv "
         f"\"{output_path}\""
     )
     return cmd
@@ -302,32 +302,32 @@ def main() -> int:
             row = db_lookup(conn, in_path, size, mtime)
             if row:
                 skipped += 1
-                logger.info(f"Skip (DB ok): {in_path}")
+                logger.debug(f"Skip (DB ok): {in_path}")
                 continue
 
             out_path = to_target_naming(in_path)
 
             if JUST_CHECK:
                 cmd = build_cmd(in_path, out_path if DELETE else temp_file)
-                logger.info(f"Encoding command: {cmd}")
+                logger.debug(f"Encoding command: {cmd}")
                 db_upsert(conn, in_path, size, mtime, status='ok', note='checked-only')
                 continue
 
             cmd = build_cmd(in_path, temp_file, False)
 
             logger.warning(f"Encoding start: {in_path}")
-            logger.debug(f"Encoding cmd: {cmd} (cwd={work_dir})")
+            logger.info(f"Encoding cmd: {cmd} (cwd={work_dir})")
             r, rlog = run(cmd, work_dir, logger)
-            logger.debug(f"Encoding exit: {r}")
+            logger.info(f"Encoding exit: {r}")
             if r != 0:
                 if "No mastering display data" in rlog:
                     logger.warning("Encoding failed with missing HDR mastering data. Retrying with software tonemap fallback.")
                     cmd = build_cmd(in_path, temp_file, True)
                     logger.warning(f"Encoding start: {in_path}")
-                    logger.debug(f"Encoding cmd: {cmd} (cwd={work_dir})")
+                    logger.info(f"Encoding cmd: {cmd} (cwd={work_dir})")
                     r = run(cmd, work_dir, logger)
+                    logger.info(f"Encoding exit: {r}")
                 if r != 0:
-                    logger.warning("Encoding failed")
                     failed += 1
                     db_upsert(conn, in_path, size, mtime, status='error', note=f'ffmpeg exit {r}')
                     logger.error(f"Encoding failed for {in_path}")
