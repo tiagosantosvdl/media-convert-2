@@ -325,7 +325,7 @@ def main() -> int:
                     cmd = build_cmd(in_path, temp_file, True)
                     logger.warning(f"Encoding start: {in_path}")
                     logger.info(f"Encoding cmd: {cmd} (cwd={work_dir})")
-                    r = run(cmd, work_dir, logger)
+                    r, rlog = run(cmd, work_dir, logger)
                     logger.info(f"Encoding exit: {r}")
                 if r != 0:
                     failed += 1
