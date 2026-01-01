@@ -242,7 +242,7 @@ def build_cmd(input_path: str, output_path: str, sw_tonemap: bool) -> str:
         "-init_hw_device vaapi=va:/dev/dri/renderD128 -init_hw_device qsv=qsv@va -filter_hw_device va "
         "-hwaccel vaapi -hwaccel_device va -hwaccel_output_format vaapi "
         f"-i \"{input_path}\" "
-        "-map 0:v:0 -map 0:a? -map 0:s? -map_chapters 0 -map_metadata 0 -c:a copy -c:s srt "
+        "-map 0:v:0 -map 0:a? -map 0:s? -map_chapters 0 -map_metadata 0 -c:a copy -c:s copy "
         f"-vf:v:0 \"{vf}\" "
         f"-c:v:0 av1_qsv -preset {PRESET} -extbrc 1 -look_ahead_depth 100 -global_quality {GQ} -async_depth 4 "
         "-g 120 -force_key_frames \"expr:gte(t,n_forced*2)\" -cluster_time_limit 5000 -cluster_size_limit 5242880 "
