@@ -87,6 +87,18 @@ GQ = 22               # maps to av1_qsv -global_quality
 DELETE = True         # delete source after successful encode
 JUST_CHECK = False    # if True, only log the ffmpeg commands
 
+# List of supported subtitles
+TEXT_SUBTITLE_CODECS = {
+    "subrip",
+    "srt",
+    "ass",
+    "ssa",
+    "mov_text",
+    "webvtt",
+    "text",
+    "ttml",
+}
+
 #######################################################################
 #                         Utilities / Logging                          #
 #######################################################################
@@ -219,6 +231,38 @@ def is_hdr(inp: str) -> bool:
     )
 
 #######################################################################
+#                Check and prepare subtitle conversion                #
+#######################################################################
+
+def subtitle_args(path: str) -> list[str]:
+    probe_cmd = [
+        "ffprobe",
+        "-v", "error",
+        "-show_entries", "stream=index,codec_name,codec_type",
+        "-of", "json",
+        path,
+    ]
+
+    probe = json.loads(subprocess.check_output(probe_cmd))
+
+    args: list[str] = []
+    out_sub_idx = 0
+
+    for stream in probe.get("streams", []):
+        if stream.get("codec_type") != "subtitle":
+            continue
+
+        codec = stream.get("codec_name")
+        index = stream["index"]
+
+        if codec in TEXT_SUBTITLE_CODECS:
+            args += ["-map", f"0:{index}"]
+            args += [f"-c:s:{out_sub_idx}", "srt"]
+            out_sub_idx += 1
+
+    return args
+
+#######################################################################
 #                        FFmpeg command builder                        #
 #######################################################################
 
@@ -226,6 +270,7 @@ def build_cmd(input_path: str, output_path: str, sw_tonemap: bool) -> str:
     scale = f"scale_vaapi=w='ceil(min({TARGET_WIDTH},iw)/8)*8':h='ceil(min({TARGET_HEIGHT},ih)/8)*8':force_original_aspect_ratio=decrease:format=p010"
     hwmap = "hwmap=derive_device=qsv,format=qsv"
     vf = f"{scale},{hwmap}"
+    accel = "-hwaccel vaapi -hwaccel_device va -hwaccel_output_format vaapi"
     if is_hdr(input_path):
         if sw_tonemap:
             tm = (
@@ -236,13 +281,18 @@ def build_cmd(input_path: str, output_path: str, sw_tonemap: bool) -> str:
         else:
             tm = "tonemap_vaapi=matrix=bt709:primaries=bt709:transfer=bt709:format=p010"
         vf = f"{tm},{scale},{hwmap}"
-  
+    else:
+        if sw_tonemap:
+            accel = ""
+            vf = f"format=nv12,hwupload,{scale},{hwmap}"
+    subtitle_args_str = " ".join(subtitle_args(input_path))
     cmd = (
         "ffmpeg -hide_banner -loglevel error -y "
         "-init_hw_device vaapi=va:/dev/dri/renderD128 -init_hw_device qsv=qsv@va -filter_hw_device va "
-        "-hwaccel vaapi -hwaccel_device va -hwaccel_output_format vaapi "
+        f"{accel} "
         f"-i \"{input_path}\" "
-        "-map 0:v:0 -map 0:a? -map 0:s? -map_chapters 0 -map_metadata 0 -c:a copy -c:s copy "
+        f"-map 0:v:0 -map 0:a? {subtitle_args_str} "
+        " -map_chapters 0 -map_metadata 0 -c:a copy "
         f"-vf:v:0 \"{vf}\" "
         f"-c:v:0 av1_qsv -preset {PRESET} -extbrc 1 -look_ahead_depth 100 -global_quality {GQ} -async_depth 4 "
         "-g 120 -force_key_frames \"expr:gte(t,n_forced*2)\" -cluster_time_limit 5000 -cluster_size_limit 5242880 "
@@ -320,13 +370,12 @@ def main() -> int:
             r, rlog = run(cmd, work_dir, logger)
             logger.info(f"Encoding exit: {r}")
             if r != 0:
-                if "No mastering display data" in rlog:
-                    logger.warning("Encoding failed with missing HDR mastering data. Retrying with software tonemap fallback.")
-                    cmd = build_cmd(in_path, temp_file, True)
-                    logger.warning(f"Encoding start: {in_path}")
-                    logger.info(f"Encoding cmd: {cmd} (cwd={work_dir})")
-                    r, rlog = run(cmd, work_dir, logger)
-                    logger.info(f"Encoding exit: {r}")
+                logger.warning("Encoding failed. Retrying with software tonemap fallback.")
+                cmd = build_cmd(in_path, temp_file, True)
+                logger.warning(f"Encoding start: {in_path}")
+                logger.info(f"Encoding cmd: {cmd} (cwd={work_dir})")
+                r, rlog = run(cmd, work_dir, logger)
+                logger.info(f"Encoding exit: {r}")
                 if r != 0:
                     failed += 1
                     db_upsert(conn, in_path, size, mtime, status='error', note=f'ffmpeg exit {r}')
