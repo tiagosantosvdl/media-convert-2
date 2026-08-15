@@ -1,6 +1,6 @@
 #!/bin/bash
 
-PIDFILE=/home/plex/convert.pid
+PIDFILE=/home/media/media-convert.pid
 if [ -f $PIDFILE ]
 then
   PID=$(cat $PIDFILE)
@@ -27,6 +27,6 @@ else
   fi
 fi
 
-sudo -u plex -g plex python3 /etc/scripts/media_convert_2.py
+python3 /etc/media-convert/media_convert_5.py
 
 rm $PIDFILE
