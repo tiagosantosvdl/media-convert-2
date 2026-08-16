@@ -22,7 +22,8 @@ Local-only library scanner and video normalizer with SQLite tracking.
 - Tracks processed files in SQLite.
 - Always re-encode every candidate not marked 'ok' in DB.
 - Video re-encode: AV1 (Intel QSV via VAAPI interop). Copies selected audio, converts selected text subtitles, and skips other subtitle formats.
-- Preserves HDR10/HLG and converts Dolby Vision profile 5 to HDR10.
+- Preserves HDR10/HLG, converts Dolby Vision profile 5 to HDR10, and uses
+  HDR10-compatible base layers from supported Dolby Vision profiles.
 - Logs to system log directory with rotation. Falls back to work_dir if needed.
 
 DB schema (auto-created):
@@ -463,6 +464,21 @@ def hdr_mode(info: VideoInfo) -> str:
             f"compatibility id is {info.dovi_compatibility_id!r}"
         )
 
+    if info.dovi_profile == 10:
+        if info.codec_name != "av1":
+            raise UnsupportedVideoError(
+                "Dolby Vision profile 10 requires an AV1 base layer; "
+                f"codec is {info.codec_name or 'unknown'!r}"
+            )
+        if not info.dovi_bl_present:
+            raise UnsupportedVideoError("Dolby Vision profile 10 has no base layer")
+        if info.dovi_compatibility_id == 1:
+            return HDR10_PQ
+        raise UnsupportedVideoError(
+            "Only HDR10-compatible Dolby Vision profile 10.1 is supported; "
+            f"compatibility id is {info.dovi_compatibility_id!r}"
+        )
+
     if info.dovi_profile is not None:
         raise UnsupportedVideoError(
             f"Dolby Vision profile {info.dovi_profile} is not supported safely"
@@ -594,15 +610,15 @@ def stream_mapping_args(path: str) -> list[str]:
         for stream in audio_streams
         if (stream.get("disposition") or {}).get("original") == 1
     }
-    if not original_audio_indices and audio_streams:
-        fallback_original = next(
-            (
-                stream for stream in audio_streams
-                if (stream.get("disposition") or {}).get("default") == 1
-            ),
-            audio_streams[0],
+    wanted_audio_present = any(
+        language_is_wanted(
+            (stream.get("tags") or {}).get("language"),
+            wanted_audio_languages,
         )
-        original_audio_indices.add(fallback_original["index"])
+        for stream in audio_streams
+    )
+    if not original_audio_indices and audio_streams and not wanted_audio_present:
+        original_audio_indices.add(audio_streams[0]["index"])
 
     args: list[str] = []
     out_sub_idx = 0
