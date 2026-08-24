@@ -86,8 +86,9 @@ TARGET_WIDTH = 3840
 TARGET_HEIGHT = 2160
 
 # Encoder controls (internal options only)
-PRESET = "slow"       # maps to av1_qsv -preset
-GQ = 20               # maps to av1_qsv -global_quality
+PRESET = "slower"       # maps to av1_qsv -preset
+CQP = 18                # maps to av1_qsv fixed quantizer scale
+MAX_GOP_FRAMES = 120    # bounds seek preroll while allowing earlier adaptive I-frames
 
 # Behavior flags
 DELETE = True         # delete source after successful encode
@@ -779,14 +780,10 @@ def build_cmd(
         *color_args,
         "-c:v:0", "av1_qsv",
         "-preset", PRESET,
-        "-extbrc", "1",
-        "-look_ahead_depth", "100",
-        "-global_quality", str(GQ),
+        "-q:v:0", str(CQP),
         "-async_depth", "4",
-        "-g", "120",
-        "-force_key_frames", "expr:gte(t,n_forced*2)",
-        "-cluster_time_limit", "5000",
-        "-cluster_size_limit", "5242880",
+        "-g", str(MAX_GOP_FRAMES),
+        "-adaptive_i", "1",
         "-bsf:v:0", f"av1_metadata={av1_color_metadata}",
         output_path,
     ]
